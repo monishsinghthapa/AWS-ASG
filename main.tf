@@ -66,10 +66,37 @@ resource "aws_security_group" "webSg" {
   }
 }
 
+resource "aws_elb" "example_elb" {
+  name               = "example-elb"
+  availability_zones = ["us-east-1a"]  # Adjust based on your requirements
+
+  listener {
+    instance_port     = 80
+    instance_protocol = "http"
+    lb_port           = 80
+    lb_protocol       = "http"
+  }
+
+  health_check {
+    target              = "HTTP:80/"
+    interval            = 30
+    timeout             = 5
+    unhealthy_threshold = 2
+    healthy_threshold   = 2
+  }
+
+  cross_zone_load_balancing   = true
+
+  tags = {
+    Name = "example-elb"
+  }
+}
+
 resource "aws_launch_configuration" "test" {
   name = "test_config"
   image_id = "ami-0c7217cdde317cfec"
   instance_type = "t2.micro"
+  security_groups = [aws_security_group.webSg.id]
 
   lifecycle {
     create_before_destroy = true
@@ -81,11 +108,14 @@ resource "aws_autoscaling_group" "example" {
   max_size             = 5
   min_size             = 2
   vpc_zone_identifier  = [aws_subnet.sub1.id]
-  launch_configuration = aws_launch_configuration.test.id
+  launch_configuration = aws_launch_configuration.test.name
 
-  health_check_type          = "EC2"
+  health_check_type          = "ELB"
   health_check_grace_period  = 300
   force_delete               = true
+  load_balancers = [ 
+    aws_elb.example_elb.id ]
+  metrics_granularity = "1Minute"
 }
 
 resource "aws_autoscaling_schedule" "daily_refresh" {
@@ -101,7 +131,7 @@ resource "aws_autoscaling_schedule" "daily_refresh" {
 resource "aws_autoscaling_policy" "scale_up" {
   name                   = "scale_up"
   scaling_adjustment    = 1
-  cooldown              = 300
+  cooldown              = 120
   adjustment_type       = "ChangeInCapacity"
   autoscaling_group_name = aws_autoscaling_group.example.name
 
@@ -110,7 +140,7 @@ resource "aws_autoscaling_policy" "scale_up" {
 resource "aws_autoscaling_policy" "scale_down" {
   name                   = "scale_down"
   scaling_adjustment    = -1
-  cooldown              = 300
+  cooldown              = 120
   adjustment_type       = "ChangeInCapacity"
   autoscaling_group_name = aws_autoscaling_group.example.name
 
@@ -121,17 +151,16 @@ resource "aws_cloudwatch_metric_alarm" "high_load" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
   metric_name         = "load_average_5min" # Custom metric name collected by CloudWatch Agent
-  namespace           = "Custom"
-  period              = 300
+  namespace           = "AWS/EC2"
+  period              = 120
   statistic           = "Average"
   threshold           = 75
   actions_enabled     = true
+  alarm_actions = [ "${aws_autoscaling_policy.scale_up.arn}" ]
 
   dimensions = {
-    AutoScalingGroupName = aws_autoscaling_group.example.name
+    AutoScalingGroupName = "${aws_autoscaling_group.example.name}"
   }
-
-  alarm_actions = [aws_autoscaling_policy.scale_up.arn]
 }
 
 resource "aws_cloudwatch_metric_alarm" "low_load" {
@@ -139,17 +168,16 @@ resource "aws_cloudwatch_metric_alarm" "low_load" {
   comparison_operator = "LessThanOrEqualToThreshold"
   evaluation_periods  = 1
   metric_name         = "load_average_5min"
-  namespace           = "Custom"
-  period              = 300
+  namespace           = "AWS/EC2"
+  period              = 120
   statistic           = "Average"
   threshold           = 50
   actions_enabled     = true
+  alarm_actions = [ "${aws_autoscaling_policy.scale_down.arn}" ]
 
   dimensions = {
-    AutoScalingGroupName = aws_autoscaling_group.example.name
+    AutoScalingGroupName = "${aws_autoscaling_group.example.name}"
   }
-
-  alarm_actions = [aws_autoscaling_policy.scale_down.arn]
 }
 
 resource "aws_ses_email_identity" "example" {
@@ -177,7 +205,7 @@ resource "aws_autoscaling_notification" "scale_up_notification" {
   group_names = [aws_autoscaling_group.example.name]
   notifications = [
     "autoscaling:EC2_INSTANCE_LAUNCH",
-    "autoscaling:EC2_INSTANCE_LAUNCH_ERROR",
+    "autoscaling:EC2_INSTANCE_LAUNCH_ERROR"
   ]
   topic_arn = aws_sns_topic.example.arn
 }
@@ -186,7 +214,7 @@ resource "aws_autoscaling_notification" "scale_down_notification" {
   group_names = [aws_autoscaling_group.example.name]
   notifications = [
     "autoscaling:EC2_INSTANCE_TERMINATE",
-    "autoscaling:EC2_INSTANCE_TERMINATE_ERROR",
+    "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"
   ]
   topic_arn = aws_sns_topic.example.arn
 }
